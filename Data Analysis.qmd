@@ -1,0 +1,158 @@
+---
+title: "Data Analysis"
+format: 
+  pdf:
+    output-file: "data-analysis.pdf"
+editor: visual
+date: "2026-03-21"
+---
+
+## Import
+
+I scraped the 2024-25 NBA Player Stats: Per Game table.
+
+```{r}
+#| message: false
+library(tidyverse)
+library(rvest)
+
+url <- "https://www.basketball-reference.com/leagues/NBA_2025_per_game.html"
+html <- read_html(url)
+table <- html |> html_element("#per_game_stats") |>
+  html_table()
+table
+```
+
+{{< pagebreak >}}
+
+## Tidy
+
+The rules that make a dataset tidy are:
+
+-   Each variable is a column;each column is a variable
+
+    Holds for my dataset.
+
+-   Each observation is a row; each row is an observation
+
+    Does not hold for my dataset because players who were in more than one team have duplicate rows. I removed the duplicates and retained a summarized row. I also removed the league average row.
+
+-   Each value is a cell; each cell is a single value
+
+    Does not hold for my dataset because the awards column has multiple values per cell. I just removed the column since I don't need it.
+
+```{r}
+table <- table |> group_by(Player) |> 
+  filter(n() == 1 | str_detect(Team, "TM")) |>
+  filter(Player != "League Average") |>
+  select(-Awards) |>
+  ungroup()
+
+table
+```
+
+My dataset is in "wide" format because each row represents one player and each of their metrics is in its own column rather than being spread across multiple rows.
+
+```{r}
+# convert "wide" data to "long" format
+table |> 
+  pivot_longer(
+    cols = starts_with("3"), 
+    names_to = "3 Point Metric", 
+    values_to = "3 Point Metric Values"
+  ) |>
+  select(
+    Player, 
+    `3 Point Metric`, 
+    `3 Point Metric Values`
+  )
+```
+
+{{< pagebreak >}}
+
+## Transform
+
+```{r}
+# capitalize athlete surnames
+library(stringr)
+
+table <- table |> mutate(
+  Player = str_replace(Player, " [A-z][^\\s]+", str_to_upper)
+  )
+
+table |> select(Player)
+```
+
+Date-time manipulation is not applicable to my dataset.
+
+```{r}
+# identify any missing values
+table |> summarise(across(everything(), function(x) sum(is.na(x))))
+```
+
+There are missing values in the FG%, 3P%, 2P%, eFG% and FT% columns. These are N/A because if a player never attempted a FG, 3P, 2P or FT, the calculation would involve dividing by zero.
+
+{{< pagebreak >}}
+
+## Visualize
+
+```{r}
+#| message: false
+#| warning: false
+library(ggrepel)
+
+# convert postion abbreviations to full names
+table <- table |>
+  mutate(Pos = case_when(
+    Pos == "PG" ~ "Point Guard",
+    Pos == "SG" ~ "Shooting Guard",
+    Pos == "SF" ~ "Small Forward",
+    Pos == "PF" ~ "Power Forward",
+    Pos == "C" ~ "Center"
+  ))
+
+# select a point to annotate in the visualization
+annotate <- table |> filter(`eFG%` > 1)
+
+# create visualization
+ggplot(
+  data = table, 
+  mapping = aes(x = PTS, y = `eFG%`, color = MP)) +
+  geom_point(alpha = 0.4) +
+  geom_point(data = annotate, color = "red") +
+  geom_label_repel(
+    data = annotate,
+    aes(label = str_c("Outlier:\n", Player, "\nFG Attempts: ", FGA)),
+    size = 1.5) +
+  labs(
+    title = "Scoring Volume vs Scoring Efficiency",
+    subtitle = "NBA 2024-25 Season",
+    caption = "\nData From 
+    https://www.basketball-reference.com/leagues/NBA_2025_per_game.html",
+    x = "PTS (Scoring Volume)",
+    y = "eFG% (Scoring Efficiency)",
+    color = "Minutes Played"
+  ) +
+  theme(plot.caption = element_text(hjust = 0))
+```
+
+{{< pagebreak >}}
+
+## Model
+
+Which player metrics have a significant impact on the number of fouls they commit?
+
+```{r}
+model <- lm(PF ~ `3PA` + FTA + ORB + 
+            STL + BLK + AST + `eFG%` + Pos, 
+            data = table) 
+summary(model)
+```
+
+The three strongest predictors were steals (coef = 0.536, p \< 0.05), offensive rebounds (coef = 0.298, p \< 0.05), and blocks (coef = 0.255, p \< 0.05). Players who steal more, rebound more offensively, and block more shots tend to commit more fouls per game.
+
+{{< pagebreak >}}
+
+## References
+
+Wickham, H., Çetinkaya-Rundel, M., & Grolemund, G. (2023). *R for data science* (2nd ed.). O'Reilly Media. <https://r4ds.hadley.nz/data-tidy.html#widening-data>
